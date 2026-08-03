@@ -79,6 +79,7 @@ SC_msieveattempts = 0; SC_msievefactors = 0;             \\ bounded msieve calls
 SC_exhaustedorders = 0;                                  \\ fully split orders with no admissible factor
 SC_factorrecoveries = 0;                                 \\ timed-out factorizations that still saved progress
 SC_cmtests = 0; SC_cmlastD = 0;                          \\ discriminants tested/current |D|
+SC_resumeattempts = 0;                                   \\ queued root checkpoints actually attempted
 SC_smoothbound = 0;                                      \\ bound represented by cached prime product
 SC_smoothprimeproduct = 1;                               \\ product of every prime through SC_smoothbound
 
@@ -99,7 +100,8 @@ scprogress() = {
             " msieve_factors=", SC_msievefactors,
             " exhausted_orders=", SC_exhaustedorders,
             " factor_recoveries=", SC_factorrecoveries,
-            " cm_tests=", SC_cmtests, " cm_last_D=", SC_cmlastD));
+            " cm_tests=", SC_cmtests, " cm_last_D=", SC_cmlastD,
+            " resume_attempts=", SC_resumeattempts));
 };
 
 /* Prepare the square-free product of every prime through B.  Repeated gcds with
@@ -824,6 +826,7 @@ screset(p) = {
   SC_exhaustedorders = 0;
   SC_factorrecoveries = 0;
   SC_cmtests = 0; SC_cmlastD = 0;
+  SC_resumeattempts = 0;
 };
 
 /* The full chain: returns the flat sequence (p, A_0, x_0, o_0, ..., A_k, x_k, o_k). */
@@ -954,6 +957,7 @@ shortcertcmfromorder(p, D, N, {R0 = 0}, {reset = 1}) = {
   my(n = #binary(p), n2 = n^2, L = scbound(p), rt = sqrtint(p),
      C, lev, tail, childstop);
   if(reset, screset(p));
+  SC_resumeattempts++;
   C = scscreenorder(p, n2, N, L, rt, D, R0);
   if(C == 0, return(0));
   sclogcmscreen(p, D, N, C);
@@ -991,6 +995,7 @@ shortcertcmfromscreen(p, D, N, o, q, {reset = 1}) = {
     m = o/q
   );
   if(reset, screset(p));
+  SC_resumeattempts++;
   sr = smoothpart(o, n2);
   if(sr[2] != q, error("short: saved CM child does not match certificate order"));
   m = sr[1];
@@ -1020,6 +1025,7 @@ shortcertfromorder(p, A, xden, N, {F = 0}, {R0 = 0}, {reset = 1}) = {
   my(n = #binary(p), n2 = n^2, L = scbound(p), rt = sqrtint(p),
      d = scnonsquare(p), E, sr, s, dv, lev, tail, childstop);
   if(reset, screset(p));
+  SC_resumeattempts++;
   if(xden == 1,
     E = ellinit([0, A, 0, 1, 0], p),
     if(xden != d, error("short: invalid saved twist denominator"));
@@ -1051,6 +1057,7 @@ shortcertfromlevel(p, A, x, o, q, {reset = 1}) = {
   if(p < 5, error("short: need p >= 5"));
   my(n = #binary(p), n2 = n^2, L = scbound(p), sr, m, tail, childstop);
   if(reset, screset(p));
+  SC_resumeattempts++;
   if(A < 0 || A >= p || gcd(A^2-4, p) != 1,
     error("short: invalid saved curve parameter"));
   if(x < 0 || x >= p || o < 1, error("short: invalid saved root level"));

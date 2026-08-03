@@ -37,6 +37,7 @@ COUNTERS_RE = re.compile(
     r"(?:\s+exhausted_orders=(\d+))?"
     r"(?:\s+factor_recoveries=(\d+))?"
     r"(?:\s+cm_tests=(\d+)\s+cm_last_D=(\d+))?"
+    r"(?:\s+resume_attempts=(\d+))?"
 )
 RESUME_EXHAUSTED_RE = re.compile(r"resume_exhausted=(\d+)")
 REAL_TIME_RE = re.compile(r"^real ([0-9.]+)$", re.MULTILINE)
@@ -534,7 +535,8 @@ def worker_input(
         '" msieve_factors=",SC_msievefactors,'
         '" exhausted_orders=",SC_exhaustedorders,'
         '" factor_recoveries=",SC_factorrecoveries,'
-        '" cm_tests=",SC_cmtests," cm_last_D=",SC_cmlastD);\n'
+        '" cm_tests=",SC_cmtests," cm_last_D=",SC_cmlastD,'
+        '" resume_attempts=",SC_resumeattempts);\n'
     )
 
 
@@ -803,6 +805,7 @@ def worker_records(workers, configs):
                     "factor_recoveries",
                     "cm_tests",
                     "cm_last_D",
+                    "resume_attempts",
                 ),
                 counters,
             ):
@@ -1267,6 +1270,7 @@ def main():
                             factor_recoveries,
                             cm_tests,
                             cm_last_D,
+                            resume_attempts,
                         ) = counters
                         progress.append(
                             f"w{index + 1}"
@@ -1283,6 +1287,7 @@ def main():
                             f"{msieve_attempts}ms/{msieve_factors}mg "
                             f"{exhausted_orders}z/{factor_recoveries}fr"
                             f" {cm_tests}ct/{cm_last_D}cd"
+                            f" {resume_attempts}ra"
                         )
                     elif index in exhausted_workers:
                         progress.append(f"w{index + 1}:done")
