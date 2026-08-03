@@ -562,6 +562,13 @@ sctryorder(p, n2, A, xden, E, N, L, rt, {R0 = 0}) = {
           SC_residualbits = #binary(R);
           sclogcandidate(p, A, xden, N, s, R)
         )));
+    /* Every still-composite factor of R is larger than n2.  If even the
+     * largest possible remaining prime, R/(n2+1), cannot clear the
+     * certificate window with s, this order is permanently exhausted. */
+    if(R == 1 || s * min(R \ (n2+1), rt) <= L,
+      sclogcandidate(p, A, xden, N, s, 1);
+      SC_exhaustedorders++
+    );
   0;
 };
 
@@ -754,6 +761,12 @@ scscreenorder(p, n2, N, L, rt, {D = 0}, {R0 = 0}) = {
       SC_residualbits = #binary(R);
       if(D, sclogcmcandidate(p, D, N, s, R))
     )
+  );
+  /* Any unresolved factor is n2-rough.  Once R/(n2+1) is too small,
+   * no refinement of this composite residual can expose a usable q. */
+  if(R == 1 || s * min(R \ (n2+1), rt) <= L,
+    if(D, sclogcmcandidate(p, D, N, s, 1));
+    SC_exhaustedorders++
   );
   0;
 };

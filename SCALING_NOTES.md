@@ -77,6 +77,14 @@ The practical workflow is consequently an adaptive frontier, not a fixed seed li
    frontier; and
 5. report both wall time and aggregate core-seconds, plus actual `resume_attempts`.
 
+The frontier also applies an exact impossibility bound.  Every unresolved prime factor
+is larger than `n^2`; for a composite residual `R`, a future child prime is therefore at
+most `R/(n^2+1)`.  Once that upper bound times the known smooth part cannot clear the
+certificate window, GP writes a tombstone and the Python loader suppresses every older
+checkpoint for the same order.  A focused ECM pass triggered this rule by reducing a
+397-bit residual to 310 bits: another split would leave at most 291 bits, below that
+order's 299-bit minimum.
+
 ## Torsion-conditioned curves
 
 Curve family 5 ports the optimized `X_1(27)` construction from OneShotSEA.  The retained
