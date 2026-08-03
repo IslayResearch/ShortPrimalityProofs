@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.pari-data/
+search-runs.jsonl
+candidates/
+cert*.txt
