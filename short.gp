@@ -930,6 +930,11 @@ shortcertcm(p, {slot = 0}, {slots = 1}, {dstart = 3}, {dbound = 100000}, {smooth
       if(SC_maxcurves && SC_curves >= SC_maxcurves, break);
       SC_cmtests++; SC_cmlastD = d;
       if(quaddisc(-d) != -d, next);
+      /* A representation 4p=t^2+d*v^2 makes -d a square modulo p.
+       * The Kronecker symbol is much cheaper than the modular square root
+       * attempted by qfbcornacchia, and rejects about half the remaining
+       * fundamental discriminants without losing any representation. */
+      if(kronecker(-d, p) == -1, next);
       v = qfbcornacchia(d, 4*p);
       if(!#v, next);
       cert = sccmtrace(p, n2, L, rt, -d, v[1]);
@@ -948,6 +953,8 @@ shortcertcm(p, {slot = 0}, {slots = 1}, {dstart = 3}, {dbound = 100000}, {smooth
       if(SC_maxcurves && SC_curves >= SC_maxcurves, break);
       SC_cmtests++; SC_cmlastD = 4*d0;
       if(quaddisc(-d0) != -4*d0, next);
+      /* Likewise, p=t^2+d0*v^2 implies that -d0 is a square modulo p. */
+      if(kronecker(-d0, p) == -1, next);
       v = qfbcornacchia(d0, p);
       if(!#v, next);
       cert = sccmtrace(p, n2, L, rt, -4*d0, 2*v[1]);

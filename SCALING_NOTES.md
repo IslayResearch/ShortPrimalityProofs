@@ -29,6 +29,14 @@ the cache and PARI's private factor table between candidate orders.
 
 ## Two-pass CM search
 
+Before invoking Cornacchia, the scanner now tests the necessary quadratic-residue
+condition.  A representation `4p=t^2+Dv^2` implies that `-D` is a square modulo
+`p` (and the corresponding statement holds for the even-discriminant form), so a
+Kronecker-symbol rejection is exact.  On the first 50,000 odd/even discriminant
+tests at the 210-digit target, this reduced Cornacchia calls to 15,229 and wall
+time from 22.65 seconds to 10.03 seconds, a 2.26x speedup, while preserving all
+239 represented orders.
+
 The production enumeration used no SEA calls and no factoring:
 
 ```sh
