@@ -47,7 +47,7 @@ SC_msievebits = 0;                                       \\ optional msieve resi
 SC_msieveseconds = 0;                                    \\ wall-time limit for each msieve call
 SC_workerkey = 0;                                        \\ unique runner key for temporary external files
 SC_curvefamily = 0;                                      \\ 0 random; 1/2/3 known 4/8/16-torsion;
-                                                         \\ 4 known 3-torsion (and built-in 2-torsion)
+                                                         \\ 4 known 3-torsion; 5 X_1(27) with point 4
 SC_rootsmoothbits = 0;                                   \\ root smooth-part threshold (0 disables)
 SC_candidatebits = 0;                                    \\ save root orders with at least this many smooth bits
 SC_candidatefile = "";                                   \\ append-only resumable root-order log
@@ -78,6 +78,9 @@ SC_pp1attempts = 0; SC_pp1factors = 0;                   \\ saved GMP P+1 calls/
 SC_msieveattempts = 0; SC_msievefactors = 0;             \\ bounded msieve calls that ran/found factors
 SC_exhaustedorders = 0;                                  \\ fully split orders with no admissible factor
 SC_factorrecoveries = 0;                                 \\ timed-out factorizations that still saved progress
+SC_cmtests = 0; SC_cmlastD = 0;                          \\ discriminants tested/current |D|
+SC_smoothbound = 0;                                      \\ bound represented by cached prime product
+SC_smoothprimeproduct = 1;                               \\ product of every prime through SC_smoothbound
 
 scprogress() = {
   if(SC_progress,
@@ -95,12 +98,32 @@ scprogress() = {
             " msieve_attempts=", SC_msieveattempts,
             " msieve_factors=", SC_msievefactors,
             " exhausted_orders=", SC_exhaustedorders,
-            " factor_recoveries=", SC_factorrecoveries));
+            " factor_recoveries=", SC_factorrecoveries,
+            " cm_tests=", SC_cmtests, " cm_last_D=", SC_cmlastD));
 };
 
-/* n^2-smooth part s of N and the rough cofactor r = N/s, by trial division over primes <= B */
+/* Prepare the square-free product of every prime through B.  Repeated gcds with
+ * this product extract every prime power from an order exactly, while replacing
+ * tens of thousands of single-prime divisions with a few quasi-linear big-int
+ * operations.  The product is under 200 KiB even for the 300-digit target. */
+scpreparesmooth(B) = {
+  if(B == SC_smoothbound, return());
+  SC_smoothprimeproduct = 1;
+  forprime(q = 2, B, SC_smoothprimeproduct *= q);
+  SC_smoothbound = B;
+};
+
+/* n^2-smooth part s of N and the rough cofactor r = N/s. */
 smoothpart(N, B) = {
-  my(s = 1, r = N);
+  my(s = 1, r = N, g);
+  if(B == SC_smoothbound && SC_smoothprimeproduct > 1,
+    while(1,
+      g = gcd(r, SC_smoothprimeproduct);
+      if(g == 1, break);
+      s *= g; r /= g
+    );
+    return([s, r])
+  );
   forprime(q = 2, B, while(r % q == 0, r /= q; s *= q));
   [s, r];
 };
@@ -130,7 +153,74 @@ scnonsquare(p) = {
   d;
 };
 
-/* Choose A for a random Montgomery curve, optionally with known 4- or 8-torsion. */
+/* Construct a Montgomery coefficient from Sutherland's optimized X_1(27)
+ * model.  The finite-field model/map implementation is adapted from
+ * IslayResearch/OneShotSEA (MIT; see THIRD_PARTY_NOTICES.md), which pins the
+ * published formula at https://math.mit.edu/~drew/X1/X1opt27new.txt.
+ * We retain only models with full rational 2-torsion and a rational
+ * point of order 4.  The distinguished order-27 point then makes the selected
+ * curve order divisible by 216; the paired quadratic twist is still tested for
+ * the price of the same SEA call. */
+scx127A(p) = {
+  my(u, v, um1, u2pu1, u5, u6, c0, c1, c2, c3, c4, c5, c6, P, vs,
+     g, x, x2, x3, g2, g3, g4, yn, yd, y, xy, x2y, rden, sden, r, s,
+     rs, r2s, a1, a2, a3, b2, b4, b6, aa, bb, roots, ei, ej, ek,
+     point4, deriv, d, A, X = 'X);
+  while(1,
+    u = Mod(random(p), p); if(!u, next);
+    um1 = u - 1; u2pu1 = u^2 + u + 1; u5 = u^5; u6 = u^6;
+    c6 = um1^2;
+    c5 = um1^2 * (u^3 + 2);
+    c4 = -um1^2 * (u^5 + 2*u^4 - 2*u^3 - u^2 - 2*u - 1);
+    c3 = u*um1 * (u^6 - 3*u^5 - 4*u^4 + u^3 + u^2 + 3*u - 2);
+    c2 = u*um1*u2pu1 * (3*u^4 - 4*u^3 - 2*u^2 + u - 1);
+    c1 = 3*u5*um1*u2pu1;
+    c0 = u6*u2pu1;
+    P = lift(c0 + c1*X + c2*X^2 + c3*X^3 + c4*X^4 + c5*X^5 + c6*X^6);
+    vs = iferr(polrootsmod(P, p), e, []);
+    for(vi = 1, #vs,
+      v = Mod(vs[vi], p);
+      if(!u*(v+1), next);
+      g = -1/u; x = v/(u*(v+1));
+      x2 = x^2; x3 = x^3; g2 = g^2; g3 = g^3; g4 = g^4;
+      yn = g4*x + g4 + g3*x - 2*g2*x2 - g*x3 + g + x;
+      yd = g4 + g3*x - g2*x2 - g*x2 + g + x;
+      if(!yd, next);
+      y = yn/yd; xy = x*y; x2y = x2*y;
+      rden = x2y-x; sden = xy;
+      if(!rden || !sden, next);
+      r = (x2y-xy+y-1)/rden;
+      s = (xy-y+1)/sden;
+      rs = r*s; r2s = r*rs;
+      a1 = s-rs+1; a2 = rs-r2s; a3 = a2;
+      b2 = a1^2 + 4*a2; b4 = a1*a3; b6 = a3^2;
+      c4 = b2^2 - 24*b4;
+      c6 = -b2^3 + 36*b2*b4 - 216*b6;
+      aa = -27*c4; bb = -54*c6;
+      if(4*aa^3 + 27*bb^2 == 0, next);
+      roots = iferr(polrootsmod(lift(X^3 + aa*X + bb), p), e, []);
+      if(#roots != 3, next);
+      point4 = 0;
+      for(i = 1, 3,
+        ei = Mod(roots[i], p);
+        ej = Mod(roots[if(i == 1, 2, 1)], p);
+        ek = Mod(roots[if(i == 3, 2, 3)], p);
+        if(kronecker(lift(ei-ej), p) == 1 &&
+           kronecker(lift(ei-ek), p) == 1,
+          point4 = 1; break)
+      );
+      if(!point4, next);
+      for(i = 1, 3,
+        ei = Mod(roots[i], p); deriv = 3*ei^2 + aa;
+        if(kronecker(lift(deriv), p) != 1, next);
+        d = sqrt(deriv); A = lift(3*ei/d);
+        if((A^2-4) % p, return(A))
+      )
+    )
+  )
+};
+
+/* Choose A for a random Montgomery curve, optionally with known torsion. */
 sccurveA(p) = {
   my(u, x, t, A, rhs, P, roots, X = 'X);
   if(SC_curvefamily == 1,
@@ -168,6 +258,7 @@ sccurveA(p) = {
       if(kronecker(rhs, p) == 1, return(A))               \\ doubling fixes x=t, giving 3-torsion
     )
   );
+  if(SC_curvefamily == 5, return(scx127A(p)));
   random(p);
 };
 
@@ -721,6 +812,7 @@ scchain(p, n2, stopcurve) = {
 /* Reset search counters before a fresh or resumed root search. */
 screset(p) = {
   SC_rootp = p;
+  scpreparesmooth((#binary(p))^2);
   SC_curves = 0; SC_seacalls = 0; SC_seaaborts = 0;
   SC_factorattempts = 0; SC_factoraborts = 0; SC_descents = 0; SC_backtracks = 0;
   SC_ecmattempts = 0; SC_ecmfactors = 0;
@@ -731,6 +823,7 @@ screset(p) = {
   SC_msieveattempts = 0; SC_msievefactors = 0;
   SC_exhaustedorders = 0;
   SC_factorrecoveries = 0;
+  SC_cmtests = 0; SC_cmlastD = 0;
 };
 
 /* The full chain: returns the flat sequence (p, A_0, x_0, o_0, ..., A_k, x_k, o_k). */
@@ -785,16 +878,27 @@ scsqrtpart(lo, hi, slot, slots) = {
   [max(lo, first), min(hi, last)];
 };
 
+/* Split an inclusive interval into equal-width blocks.  This balances the
+ * discriminant tests themselves and is preferable for a factor-free first pass. */
+scwidthpart(lo, hi, slot, slots) = {
+  if(hi < lo, return([1, 0]));
+  my(count = hi-lo+1, first, last);
+  first = lo + (count*slot) \ slots;
+  last = lo + (count*(slot+1)) \ slots - 1;
+  [first, last];
+};
+
 /* CM-first root search.  Worker slot k of slots scans disjoint contiguous blocks of
  * odd and/or even fundamental discriminants.  Contiguous blocks avoid locking a worker
  * into a residue class with a local obstruction to Cornacchia representations.  Each
  * principal representation 4p=t^2+|D|v^2 supplies the exact candidate orders p+1+-t
  * without SEA.  kind=0 scans both discriminant types, 1 only odd, and 2 only even. */
-shortcertcm(p, {slot = 0}, {slots = 1}, {dstart = 3}, {dbound = 100000}, {smoothbits = 40}, {kind = 0}, {reset = 1}) = {
+shortcertcm(p, {slot = 0}, {slots = 1}, {dstart = 3}, {dbound = 100000}, {smoothbits = 40}, {kind = 0}, {reset = 1}, {partition = 0}) = {
   if(!ispseudoprime(p), error("short: p is composite"));
   if(p < 5, error("short: need p >= 5"));
   if(slot < 0 || slot >= slots, error("short: invalid CM worker slot"));
   if(kind < 0 || kind > 2, error("short: invalid CM discriminant kind"));
+  if(partition < 0 || partition > 1, error("short: invalid CM partition"));
   my(n = #binary(p), n2 = n^2, L = scbound(p), rt = sqrtint(p),
      d, d0, kmin, kmax, bounds, firstk, lastk, d0min, d0max, first0, last0,
      v, cert, oldrootsmooth = SC_rootsmoothbits);
@@ -803,10 +907,12 @@ shortcertcm(p, {slot = 0}, {slots = 1}, {dstart = 3}, {dbound = 100000}, {smooth
   if(kind != 2,
     kmin = max(0, dstart \ 4);
     kmax = (dbound-3) \ 4;
-    bounds = scsqrtpart(kmin, kmax, slot, slots);
+    bounds = if(partition, scwidthpart(kmin, kmax, slot, slots),
+                scsqrtpart(kmin, kmax, slot, slots));
     firstk = bounds[1]; lastk = bounds[2];
     forstep(d = 3 + 4*firstk, 3 + 4*lastk, 4,
       if(SC_maxcurves && SC_curves >= SC_maxcurves, break);
+      SC_cmtests++; SC_cmlastD = d;
       if(quaddisc(-d) != -d, next);
       v = qfbcornacchia(d, 4*p);
       if(!#v, next);
@@ -819,10 +925,12 @@ shortcertcm(p, {slot = 0}, {slots = 1}, {dstart = 3}, {dbound = 100000}, {smooth
   if(kind != 1,
     d0min = max(1, (dstart+3) \ 4);
     d0max = dbound \ 4;
-    bounds = scsqrtpart(d0min, d0max, slot, slots);
+    bounds = if(partition, scwidthpart(d0min, d0max, slot, slots),
+                scsqrtpart(d0min, d0max, slot, slots));
     first0 = bounds[1]; last0 = bounds[2];
     for(d0 = first0, last0,
       if(SC_maxcurves && SC_curves >= SC_maxcurves, break);
+      SC_cmtests++; SC_cmlastD = 4*d0;
       if(quaddisc(-d0) != -4*d0, next);
       v = qfbcornacchia(d0, p);
       if(!#v, next);
@@ -839,13 +947,13 @@ shortcertcm(p, {slot = 0}, {slots = 1}, {dstart = 3}, {dbound = 100000}, {smooth
 /* Resume a checkpointed CM root order (stored with xden=0).  Factoring is repeated only
  * on the smallest saved residual; the class polynomial is still deferred until the order
  * passes the certificate-window test. */
-shortcertcmfromorder(p, D, N, {R0 = 0}) = {
+shortcertcmfromorder(p, D, N, {R0 = 0}, {reset = 1}) = {
   if(!ispseudoprime(p), error("short: p is composite"));
   if(p < 5, error("short: need p >= 5"));
   if(D >= 0 || quaddisc(D) != D, error("short: invalid CM discriminant"));
   my(n = #binary(p), n2 = n^2, L = scbound(p), rt = sqrtint(p),
      C, lev, tail, childstop);
-  screset(p);
+  if(reset, screset(p));
   C = scscreenorder(p, n2, N, L, rt, D, R0);
   if(C == 0, return(0));
   sclogcmscreen(p, D, N, C);
@@ -864,7 +972,7 @@ shortcertcmfromorder(p, D, N, {R0 = 0}) = {
 /* Resume a CM root that has already passed factoring and window selection.  The saved
  * (D,N,o,q) tuple avoids repeating the discriminant scan and root-order factorization;
  * reconstruction and the exact-order point test are still performed from scratch. */
-shortcertcmfromscreen(p, D, N, o, q) = {
+shortcertcmfromscreen(p, D, N, o, q, {reset = 1}) = {
   if(!ispseudoprime(p), error("short: p is composite"));
   if(p < 5, error("short: need p >= 5"));
   if(D >= 0 || quaddisc(D) != D, error("short: invalid CM discriminant"));
@@ -882,6 +990,7 @@ shortcertcmfromscreen(p, D, N, o, q) = {
       error("short: invalid saved CM child prime"));
     m = o/q
   );
+  if(reset, screset(p));
   sr = smoothpart(o, n2);
   if(sr[2] != q, error("short: saved CM child does not match certificate order"));
   m = sr[1];
@@ -890,7 +999,6 @@ shortcertcmfromscreen(p, D, N, o, q) = {
   fo = factor(m)[,1];
   if(q != 1, fo = concat(fo, [q]~));
   C = [[o, q, fo]];
-  screset(p);
   lev = scmontgomerylevel(p, D, N, C);
   if(type(lev) != "t_VEC",
     if(lev == 0, sclogcmtombstone(p, D, N, C));
@@ -906,12 +1014,12 @@ shortcertcmfromscreen(p, D, N, o, q) = {
 /* Resume an exact root curve order saved by SC_candidatefile.  If F is supplied, it must
  * be a row or column of known factors of the saved rough residual; otherwise the currently
  * configured bounded factoring portfolio is applied again.  SEA is not recomputed. */
-shortcertfromorder(p, A, xden, N, {F = 0}, {R0 = 0}) = {
+shortcertfromorder(p, A, xden, N, {F = 0}, {R0 = 0}, {reset = 1}) = {
   if(!ispseudoprime(p), error("short: p is composite"));
   if(p < 5, error("short: need p >= 5"));
   my(n = #binary(p), n2 = n^2, L = scbound(p), rt = sqrtint(p),
      d = scnonsquare(p), E, sr, s, dv, lev, tail, childstop);
-  screset(p);
+  if(reset, screset(p));
   if(xden == 1,
     E = ellinit([0, A, 0, 1, 0], p),
     if(xden != d, error("short: invalid saved twist denominator"));
@@ -938,10 +1046,11 @@ shortcertfromorder(p, A, xden, N, {F = 0}, {R0 = 0}) = {
 /* Resume a complete root level that already passed the exact-order point test.  Cheap
  * structural checks reject malformed checkpoints; the final verifier still validates
  * the curve and point before the runner accepts any completed certificate. */
-shortcertfromlevel(p, A, x, o, q) = {
+shortcertfromlevel(p, A, x, o, q, {reset = 1}) = {
   if(!ispseudoprime(p), error("short: p is composite"));
   if(p < 5, error("short: need p >= 5"));
   my(n = #binary(p), n2 = n^2, L = scbound(p), sr, m, tail, childstop);
+  if(reset, screset(p));
   if(A < 0 || A >= p || gcd(A^2-4, p) != 1,
     error("short: invalid saved curve parameter"));
   if(x < 0 || x >= p || o < 1, error("short: invalid saved root level"));
@@ -951,7 +1060,6 @@ shortcertfromlevel(p, A, x, o, q) = {
     error("short: saved root order is outside the certificate window"));
   if(q != 1 && (q <= n2 || q^2 >= p || !ispseudoprime(q)),
     error("short: invalid saved child prime"));
-  screset(p);
   if(q == 1, return([p, A, x, o]));
   SC_descents++;
   childstop = if(SC_branchcurves, SC_curves + SC_branchcurves, 0);

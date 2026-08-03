@@ -36,6 +36,7 @@ COUNTERS_RE = re.compile(
     r"(?:\s+msieve_attempts=(\d+)\s+msieve_factors=(\d+))?"
     r"(?:\s+exhausted_orders=(\d+))?"
     r"(?:\s+factor_recoveries=(\d+))?"
+    r"(?:\s+cm_tests=(\d+)\s+cm_last_D=(\d+))?"
 )
 RESUME_EXHAUSTED_RE = re.compile(r"resume_exhausted=(\d+)")
 REAL_TIME_RE = re.compile(r"^real ([0-9.]+)$", re.MULTILINE)
@@ -242,8 +243,8 @@ def parse_args():
         default=[0],
         help=(
             "comma-separated curve families assigned cyclically to workers: "
-            "0 random; 1/2/3 known 4/8/16-torsion; 4 known 3-torsion "
-            "(default: 0)"
+            "0 random; 1/2/3 known 4/8/16-torsion; 4 known 3-torsion; "
+            "5 X_1(27) with a rational point of order 4 (default: 0)"
         ),
     )
     parser.add_argument(
@@ -286,11 +287,29 @@ def parse_args():
         help="CM discriminant types to scan (default: both)",
     )
     parser.add_argument(
+        "--cm-partition",
+        choices=("sqrt", "width"),
+        default="sqrt",
+        help=(
+            "worker partition: sqrt balances expected represented orders when "
+            "factoring inline; width balances discriminants in a screen-only "
+            "enumeration pass (default: sqrt)"
+        ),
+    )
+    parser.add_argument(
         "--cm-only",
         action="store_true",
         help=(
             "stop successfully after the finite CM range is exhausted instead "
             "of falling back to an unbounded random-SEA search"
+        ),
+    )
+    parser.add_argument(
+        "--cm-screen-only",
+        action="store_true",
+        help=(
+            "enumerate and checkpoint CM orders without factoring; implies "
+            "--cm-only, --cm-partition width, and zero factoring limits"
         ),
     )
     parser.add_argument(
@@ -328,6 +347,15 @@ def parse_args():
         type=nonnegative_int,
         default=0,
         help="skip this many top-ranked saved orders before assignment (default: 0)",
+    )
+    parser.add_argument(
+        "--resume-per-worker",
+        type=positive_int,
+        default=1,
+        help=(
+            "number of ranked checkpoints each worker tries before fallback; "
+            "checkpoints are distributed round-robin in rank order (default: 1)"
+        ),
     )
     parser.add_argument(
         "--resume-only",
@@ -412,49 +440,53 @@ def worker_input(
     branch_curves,
     seed,
     gp_threads,
-    resume_order,
+    resume_orders,
     cm_start,
     cm_bound,
     cm_smooth_bits,
     cm_slot,
     cm_slots,
     cm_kind,
+    cm_partition,
     cm_only,
     resume_only,
 ):
     search = "c=0; "
     initialized = False
-    if resume_order is not None:
+    for resume_order in resume_orders:
+        reset = 0 if initialized else 1
         if resume_order["kind"] == "level":
             search += (
-                f"c=shortcertfromlevel({p},{resume_order['A']},"
-                f"{resume_order['x']},{resume_order['o']},{resume_order['q']}); "
+                f"if(c==0,c=shortcertfromlevel({p},{resume_order['A']},"
+                f"{resume_order['x']},{resume_order['o']},{resume_order['q']},"
+                f"{reset})); "
             )
         elif resume_order["kind"] == "cm_screen":
             search += (
-                f"c=shortcertcmfromscreen({p},-{resume_order['D']},"
-                f"{resume_order['N']},{resume_order['o']},{resume_order['q']}); "
+                f"if(c==0,c=shortcertcmfromscreen({p},-{resume_order['D']},"
+                f"{resume_order['N']},{resume_order['o']},{resume_order['q']},"
+                f"{reset})); "
             )
         elif resume_order["xden"] == "0":
             search += (
-                f"c=shortcertcmfromorder({p},-{resume_order['A']},"
-                f"{resume_order['N']},{resume_order['residual']}); "
+                f"if(c==0,c=shortcertcmfromorder({p},-{resume_order['A']},"
+                f"{resume_order['N']},{resume_order['residual']},{reset})); "
             )
         else:
             search += (
-                f"c=shortcertfromorder({p},{resume_order['A']},"
+                f"if(c==0,c=shortcertfromorder({p},{resume_order['A']},"
                 f"{resume_order['xden']},{resume_order['N']},0,"
-                f"{resume_order['residual']}); "
+                f"{resume_order['residual']},{reset})); "
             )
         search += (
-            f"if(c==0,warning(\"resume_exhausted=\",SC_exhaustedorders)); "
+            "if(c==0,warning(\"resume_exhausted=\",SC_exhaustedorders)); "
         )
         initialized = True
     if cm_bound and not resume_only:
         search += (
             f"if(c==0,c=shortcertcm({p},{cm_slot},{cm_slots},"
             f"{cm_start},{cm_bound},{cm_smooth_bits},{cm_kind},"
-            f"{0 if initialized else 1})); "
+            f"{0 if initialized else 1},{cm_partition})); "
         )
         initialized = True
     if not cm_only and not resume_only:
@@ -501,7 +533,8 @@ def worker_input(
         '" msieve_attempts=",SC_msieveattempts,'
         '" msieve_factors=",SC_msievefactors,'
         '" exhausted_orders=",SC_exhaustedorders,'
-        '" factor_recoveries=",SC_factorrecoveries);\n'
+        '" factor_recoveries=",SC_factorrecoveries,'
+        '" cm_tests=",SC_cmtests," cm_last_D=",SC_cmlastD);\n'
     )
 
 
@@ -768,6 +801,8 @@ def worker_records(workers, configs):
                     "msieve_factors",
                     "exhausted_orders",
                     "factor_recoveries",
+                    "cm_tests",
+                    "cm_last_D",
                 ),
                 counters,
             ):
@@ -854,6 +889,26 @@ def main():
         raise SystemExit("--cm-start must not exceed --cm-bound")
     if args.cm_only and not args.cm_bound:
         raise SystemExit("--cm-only requires --cm-bound")
+    if args.cm_screen_only:
+        if not args.cm_bound:
+            raise SystemExit("--cm-screen-only requires --cm-bound")
+        if args.resume_candidates is not None:
+            raise SystemExit("--cm-screen-only cannot resume checkpoints")
+        if not all(args.candidate_bits) or args.candidate_dir is None:
+            raise SystemExit(
+                "--cm-screen-only requires --candidate-bits and --candidate-dir"
+            )
+        args.cm_only = True
+        args.cm_partition = "width"
+        args.factor_seconds = [0]
+        args.deep_factor_seconds = [0]
+        args.prefactor_seconds = [0]
+        args.pm1_bounds = [0]
+        args.pp1_bounds = [0]
+        args.ecm_bounds = [0]
+        args.ecm_curves = [0]
+        args.msieve_bits = [0]
+        args.msieve_seconds = [0]
     if args.resume_only and args.resume_candidates is None:
         raise SystemExit("--resume-only requires --resume-candidates")
     if args.resume_only and args.cm_only:
@@ -937,7 +992,9 @@ def main():
             "cm_slot": index,
             "cm_slots": worker_count,
             "cm_kind": {"both": 0, "odd": 1, "even": 2}[args.cm_kind],
+            "cm_partition": {"sqrt": 0, "width": 1}[args.cm_partition],
             "cm_only": args.cm_only,
+            "cm_screen_only": args.cm_screen_only,
             "resume_only": args.resume_only,
             "candidate_bits": args.candidate_bits[index % len(args.candidate_bits)],
             "candidate_file": (
@@ -946,10 +1003,10 @@ def main():
                 and args.candidate_bits[index % len(args.candidate_bits)]
                 else ""
             ),
-            "resume_order": (
-                resume_candidates[index % len(resume_candidates)]
+            "resume_orders": (
+                resume_candidates[index::worker_count][: args.resume_per_worker]
                 if resume_candidates
-                else None
+                else []
             ),
             "sea_torsion": args.sea_torsions[index % len(args.sea_torsions)],
             "branch_curves": branch_curves[index % len(branch_curves)],
@@ -957,8 +1014,8 @@ def main():
         }
         for index, seed in enumerate(seeds)
     ]
-    if any(config["curve_family"] not in (0, 1, 2, 3, 4) for config in configs):
-        raise SystemExit("curve families must be 0, 1, 2, 3, or 4")
+    if any(config["curve_family"] not in (0, 1, 2, 3, 4, 5) for config in configs):
+        raise SystemExit("curve families must be 0, 1, 2, 3, 4, or 5")
     if any(
         (config["ecm_bound"] and config["ecm_curves"])
         or config["pm1_bound"]
@@ -1023,13 +1080,14 @@ def main():
                     config["branch_curves"],
                     config["seed"],
                     config["gp_threads"],
-                    config["resume_order"],
+                    config["resume_orders"],
                     config["cm_start"],
                     config["cm_bound"],
                     config["cm_smooth_bits"],
                     config["cm_slot"],
                     config["cm_slots"],
                     config["cm_kind"],
+                    config["cm_partition"],
                     config["cm_only"],
                     config["resume_only"],
                 )
@@ -1065,11 +1123,14 @@ def main():
             f"CM discriminant range {args.cm_start}..{args.cm_bound}; "
             f"CM smooth-bit threshold {args.cm_smooth_bits}; "
             f"CM discriminant types {args.cm_kind}; "
+            f"CM partition {args.cm_partition}; "
             f"CM-only mode {args.cm_only}; "
+            f"CM screen-only mode {args.cm_screen_only}; "
             f"candidate save thresholds "
             f"{[config['candidate_bits'] for config in configs]}; "
             f"resume checkpoints "
             f"{len(resume_candidates)} ranked checkpoint(s); "
+            f"resume queues {[len(config['resume_orders']) for config in configs]}; "
             f"resume-only mode {args.resume_only}; "
             f"SEA torsion filters {[config['sea_torsion'] for config in configs]}; "
             f"child-branch budgets {[config['branch_curves'] for config in configs]}; "
@@ -1204,6 +1265,8 @@ def main():
                             msieve_factors,
                             exhausted_orders,
                             factor_recoveries,
+                            cm_tests,
+                            cm_last_D,
                         ) = counters
                         progress.append(
                             f"w{index + 1}"
@@ -1219,6 +1282,7 @@ def main():
                             f"{pp1_attempts}p+/{pp1_factors}g+ "
                             f"{msieve_attempts}ms/{msieve_factors}mg "
                             f"{exhausted_orders}z/{factor_recoveries}fr"
+                            f" {cm_tests}ct/{cm_last_D}cd"
                         )
                     elif index in exhausted_workers:
                         progress.append(f"w{index + 1}:done")

@@ -59,6 +59,16 @@ factor and reduced the residual; a no-factor batch is never repeated automatical
 When `msieve` and GNU `timeout` are installed, `--msieve-bits` and `--msieve-seconds` add a
 one-thread, wall-time-bounded msieve stage for residuals below a selected size; every factor it
 emits before completion or timeout is retained.
+The exact $n^2$-smooth part of every curve order is extracted with repeated gcds against a cached
+product of all primes through $n^2$.  This replaces a separate division by every small prime for
+each order while retaining every prime power exactly; at the 210-digit target the cache is under
+100 KiB and is built once per worker.  Curve family 5 implements the optimized $X_1(27)$ model,
+retaining Montgomery-compatible curves with full rational 2-torsion and a rational point of order
+4, so the selected-side group order is divisible by 216 before point counting.
+The $X_1(27)$ finite-field model and map are adapted from
+[`IslayResearch/OneShotSEA`](https://github.com/IslayResearch/OneShotSEA), which implements and
+authenticates Andrew Sutherland's published optimized $X_1(27)$ formula; license attribution is
+retained in `THIRD_PARTY_NOTICES.md`.
 
 An optional CM-first root search avoids point counting for its candidate orders.  For a negative
 fundamental discriminant $D$, Cornacchia's algorithm can cheaply detect a representation
@@ -76,6 +86,10 @@ representations, whose density decreases roughly as $1/\sqrt{|D|}$, much better 
 blocks;
 `--cm-kind odd`, `even`, or `both` selects the fundamental-discriminant families.  Using
 non-overlapping ranges makes consecutive batches reproducible and avoids duplicated work.
+For a factor-free enumeration pass, `--cm-partition width` instead gives each worker the same
+number of discriminants.  This balances wall time when testing discriminants dominates; the
+default `sqrt` partition remains useful when inline factoring cost follows the expected number
+of represented orders.
 Pass `--cm-only` to make this a finite range scan: if every worker exhausts its assigned block,
 the runner exits successfully and writes an `outcome: "exhausted"` finish record instead of
 starting the random-SEA fallback.
@@ -103,6 +117,20 @@ divides the order's original rough part.  `shortcertfromlevel(p,A,x,o,q)` resume
 five-field root-level checkpoint; the final verifier still validates the entire resulting proof.
 `shortcertcmfromscreen(p,D,N,o,q)` resumes a seven-field screened CM root and repeats only model
 reconstruction, the exact-order point test, and the recursive child proof.
+`--resume-per-worker N` lets each worker consume a round-robin queue of N globally ranked
+checkpoints in one process.  Counters and factor tables remain live across the queue, avoiding
+repeated startup and allowing a two-pass CM workflow: first enumerate exact orders with all
+factoring limits set to zero, then apply the expensive portfolio only to the strongest saved
+orders.
+For example, the first command below performs a balanced finite enumeration without factoring,
+and the second spends the full portfolio on the top 200 resulting checkpoints, twenty per worker:
+```
+python3 parallel_short.py "$p" -j 10 --cm-bound 100000000 --cm-screen-only \
+  --candidate-bits 40 --candidate-dir candidates/210 --manifest search-runs-210.jsonl
+python3 parallel_short.py "$p" -j 10 --resume-candidates candidates/210 \
+  --resume-top 200 --resume-per-worker 20 --resume-only --candidate-bits 40 \
+  --candidate-dir candidates/210 --manifest search-runs-210.jsonl -o cert210.txt
+```
 The checkpoint loader rechecks that five- and seven-field orders have exactly one admissible
 $n^2$-rough child and that their complementary factor is $n^2$-smooth before ranking them.
 After a class polynomial is constructed successfully but supplies no matching Montgomery
